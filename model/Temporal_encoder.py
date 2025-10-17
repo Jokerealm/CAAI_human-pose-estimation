@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from functools import partial
 from einops import rearrange
-from timm.models.layers import DropPath
+from timm.layers import DropPath
 
 from common.opt import opts
 

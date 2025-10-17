@@ -78,7 +78,7 @@ class sgraformer(nn.Module):
 
 
         # Time Serial
-        self.TF = TemTemporal__features(num_frame, num_joints, in_chans, embed_dim_ratio, depth,
+        self.TF = Temporal__features(num_frame, num_joints, in_chans, embed_dim_ratio, depth,
                                         num_heads, mlp_ratio, qkv_bias, qk_scale,
                                         drop_rate, attn_drop_rate, drop_path_rate, norm_layer)
 

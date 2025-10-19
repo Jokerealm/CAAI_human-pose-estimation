@@ -5,18 +5,19 @@ import random
 import torch.optim as optim
 from tqdm import tqdm
 # from torch.utils.tensorboard import SummaryWriter
-
+# from model.SGraMotionAGFormer import SGraMotionAGFormer
 from common.utils import *
 from common.opt import opts
 from common.h36m_dataset import Human36mDataset
 from common.Mydataset import Fusion
 
-from model.SGraFormer import sgraformer
+# from model.SGraFormer import sgraformer
+from model.SGraMotionAGFormer import SGraMotionAGFormer
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2"
-CUDA_ID = [0, 1, 2]
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+CUDA_ID = [0]
 device = torch.device("cuda")
 
 
@@ -45,15 +46,17 @@ def step(split, opt, actions, dataLoader, model, optimizer=None, epoch=None, wri
         [input_2D, gt_3D, batch_cam, scale, bb_box, hops] = get_varialbe(split, [input_2D, gt_3D, batch_cam, scale, bb_box, hops])
 
         if split == 'train':
-            output_3D = model(input_2D, hops)
+            output_3D, loss_contrastive = model(input_2D, hops)
         elif split == 'test':
-            input_2D, output_3D = input_augmentation(input_2D, hops, model)
+            input_2D, output_3D, loss_contrastive = input_augmentation(input_2D, hops, model)
 
         out_target = gt_3D.clone()
         out_target[:, :, 0] = 0
 
         if split == 'train':
             loss = mpjpe_cal(output_3D, out_target)
+            loss_contrastive = opt.contrastive_fac * loss_contrastive
+            loss = loss + loss_contrastive.mean()
 
             TQDM.set_description(f'Epoch [{epoch}/{opt.nepoch}]')
             TQDM.set_postfix({"l": loss.item()})
@@ -85,9 +88,9 @@ def step(split, opt, actions, dataLoader, model, optimizer=None, epoch=None, wri
 
 def input_augmentation(input_2D, hops, model):
     input_2D_non_flip = input_2D[:, 0]
-    output_3D_non_flip = model(input_2D_non_flip, hops)
+    output_3D_non_flip, loss_contrastive = model(input_2D_non_flip, hops)
 
-    return input_2D_non_flip, output_3D_non_flip
+    return input_2D_non_flip, output_3D_non_flip, loss_contrastive
 
 
 if __name__ == '__main__':
@@ -116,9 +119,10 @@ if __name__ == '__main__':
     test_dataloader = torch.utils.data.DataLoader(test_data, batch_size=opt.batch_size,
                                                   shuffle=False, num_workers=int(opt.workers), pin_memory=True)
 
-    model = sgraformer(num_frame=opt.frames, num_joints=17, in_chans=2, embed_dim_ratio=32, depth=4,
-                      num_heads=8, mlp_ratio=2., qkv_bias=True, qk_scale=None, drop_path_rate=0.1)
-    # model = FuseModel()
+    # model = sgraformer(num_frame=opt.frames, num_joints=17, in_chans=2, embed_dim_ratio=32, depth=4,
+    #                   num_heads=8, mlp_ratio=2., qkv_bias=True, qk_scale=None, drop_path_rate=0.1)
+    model = SGraMotionAGFormer(num_frame=opt.frames, num_joints=17, in_chans=2, embed_dim_ratio=32, depth=4,
+                          num_heads=8, mlp_ratio=2., qkv_bias=True, qk_scale=None, drop_path_rate=0.1)
 
     if torch.cuda.device_count() > 1:
         print("Let's use", torch.cuda.device_count(), "GPUs!")

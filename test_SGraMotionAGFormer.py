@@ -1,5 +1,5 @@
 import torch
-from model.SGraMotionAGFormer import SGraMotionAGFormer
+from model.SGraAGFormer import SGraAGFormer
 from common.opt import opts
 import os
 # 设置参数
@@ -13,7 +13,7 @@ device = torch.device("cuda")
 
 # 创建模型实例
 def create_model():
-    model = SGraMotionAGFormer(
+    model = SGraAGFormer(
         num_frame=opt.frames,
         num_joints=17,
         in_chans=2,

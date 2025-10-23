@@ -122,7 +122,7 @@ if __name__ == '__main__':
     # model = sgraformer(num_frame=opt.frames, num_joints=17, in_chans=2, embed_dim_ratio=32, depth=4,
     #                   num_heads=8, mlp_ratio=2., qkv_bias=True, qk_scale=None, drop_path_rate=0.1)
     model = SGraAGFormer(num_frame=opt.frames, num_joints=17, in_chans=2, embed_dim_ratio=32, depth=4,
-                          num_heads=8, mlp_ratio=2., qkv_bias=True, qk_scale=None, drop_path_rate=0.1)
+                          num_heads=8, mlp_ratio=2., qkv_bias=True, qk_scale=0.1, drop_path_rate=0.1)
 
     if torch.cuda.device_count() > 1:
         print("Let's use", torch.cuda.device_count(), "GPUs!")
@@ -145,7 +145,7 @@ if __name__ == '__main__':
     lr = opt.lr
     all_param += list(model.parameters())
 
-    optimizer = optim.AdamW(all_param, lr=lr, weight_decay=0.1)
+    optimizer = optim.AdamW(all_param, lr=lr, weight_decay=0.01)
 
     ## tensorboard
     # writer = SummaryWriter("runs/nin")

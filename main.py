@@ -15,8 +15,8 @@ from model.SGraFormer import sgraformer
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2"
-CUDA_ID = [0, 1, 2]
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+CUDA_ID = [0, 1, 2,3]
 device = torch.device("cuda")
 
 

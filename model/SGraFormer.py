@@ -20,7 +20,7 @@ device = torch.device("cuda")
 class sgraformer(nn.Module):
     def __init__(self, num_frame=9, num_joints=17, in_chans=2, embed_dim_ratio=32, depth=4,
                  num_heads=8, mlp_ratio=2., qkv_bias=True, qk_scale=None,
-                 drop_rate=0.2, attn_drop_rate=0., drop_path_rate=0.2, norm_layer=None):
+                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0.2, norm_layer=None):
         """    ##########hybrid_backbone=None, representation_size=None,
         Args:
             num_frame (int, tuple): input frame number
@@ -76,7 +76,6 @@ class sgraformer(nn.Module):
 
         self.conv_hop_norm = nn.LayerNorm(embed_dim)
 
-
         # Time Serial
         self.TF = Temporal__features(num_frame, num_joints, in_chans, embed_dim_ratio, depth,
                                         num_heads, mlp_ratio, qkv_bias, qk_scale,
@@ -115,7 +114,6 @@ class sgraformer(nn.Module):
         hops2 = hop_global * hops[:, :, :, 1]
         hops3 = hop_global * hops[:, :, :, 2]
         hops4 = hop_global * hops[:, :, :, 3]
-        # hops = torch.cat((hops1,hops2,hops3,hops4), dim=-1)
         hops = torch.cat((hops1,hops2,hops3,hops4), dim=-1)
 
         x1 = x[:, :, 0]
@@ -152,13 +150,10 @@ class sgraformer(nn.Module):
 
         hop = torch.cat((hop1.unsqueeze(1), hop2.unsqueeze(1), hop3.unsqueeze(1), hop4.unsqueeze(1)), dim=1) + self.view_pos_embed
         hop = self.pos_drop(hop)
-        # hop = self.conv_hop(hop).squeeze(1) + hop1 + hop2 + hop3 + hop4
-        # hop = self.conv_hop_norm(hop)
         hop = self.conv(hop).squeeze(1) + hop1 + hop2 + hop3 + hop4
         hop = self.conv_norm(hop)
 
         x = x * hop
-
 
         ### Temporal transformer encoder
         x = self.TF(x)
@@ -166,4 +161,3 @@ class sgraformer(nn.Module):
         x = self.head(x)
         x = x.view(b, opt.frames, j, -1)
         return x
-

@@ -1,7 +1,10 @@
 import torch
-from model.SGraAGFormer import SGraAGFormer
+# from model.SGraAGFormer import SGraAGFormer
+from model.SGraDiFormer import sgraformer
 from common.opt import opts
 import os
+
+
 # 设置参数
 opt = opts().parse()
 
@@ -13,7 +16,7 @@ device = torch.device("cuda")
 
 # 创建模型实例
 def create_model():
-    model = SGraAGFormer(
+    model = sgraformer(
         num_frame=opt.frames,
         num_joints=17,
         in_chans=2,
@@ -58,7 +61,6 @@ def test_forward_pass():
     # 打印输出形状以验证
     print(f"Input shape: {x.shape}")
     print(f"Output shape: {output.shape}")
-    print(f"Contrastive loss shape: {loss_contrastive.shape}")
     print("Forward pass test completed successfully!")
 
 if __name__ == "__main__":

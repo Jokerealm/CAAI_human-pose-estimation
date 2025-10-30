@@ -13,7 +13,6 @@ class opts():
 
         self.parser.add_argument('--dataset', type=str, default='h36m')
         self.parser.add_argument('-k', '--keypoints', default='cpn_ft_h36m_dbb', type=str)
-#         self.parser.add_argument('-k', '--keypoints', default='gt', type=str)
         self.parser.add_argument('--data_augmentation', type=bool, default=True)
         self.parser.add_argument('--reverse_augmentation', type=bool, default=False)
         self.parser.add_argument('--test_augmentation', type=bool, default=True)
@@ -31,7 +30,7 @@ class opts():
         self.parser.add_argument('--lr', type=float, default=2e-4)
         self.parser.add_argument('--lr_decay_large', type=float, default=0.98)
         self.parser.add_argument('--large_decay_epoch', type=int, default=5)
-        self.parser.add_argument('--workers', type=int, default=0)
+        self.parser.add_argument('--workers', type=int, default=8)
         self.parser.add_argument('-lrd', '--lr_decay', default=0.98, type=float)
         self.parser.add_argument('--frames', type=int, default=27)
         self.parser.add_argument('--pad', type=int, default=175)
@@ -46,6 +45,7 @@ class opts():
         self.parser.add_argument('-previous_name', type=str, default='')
         self.parser.add_argument('--mvf_kernel', default=7, type=int)
         self.parser.add_argument('--contrastive_fac', type=float, default=0.05)
+        
 
     def parse(self):
         self.init()

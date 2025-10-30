@@ -16,54 +16,19 @@ opt = opts().parse()
 device = torch.device("cuda")
 
 
-class GCNFormerBlock(nn.Module):
+class SpatialGCNBlock(nn.Module):
     """
-    GCNFormer Block实现，包含空间GCNFormer和时间GCNFormer的顺序处理
+    空间GCN块，专注于捕捉关节点间的空间关系
     """
-    def __init__(self, dim, mlp_ratio=4., act_layer=nn.GELU, attn_drop=0., drop=0., drop_path=0.,
+    def __init__(self, dim, mlp_ratio=4., act_layer=nn.GELU, drop=0., drop_path=0.,
                  use_layer_scale=True, layer_scale_init_value=1e-5,
-                 num_joints=17, num_frames=27, temporal_neighbour_k=2):
-        super().__init__()
-        # 空间GCNFormer
-        self.spatial_gcnformer = AGFormerBlock(dim, mlp_ratio, act_layer, attn_drop, drop, drop_path,
-                                              mode='spatial', mixer_type="graph",
-                                              num_nodes=num_joints,
-                                              use_layer_scale=use_layer_scale,
-                                              layer_scale_init_value=layer_scale_init_value)
-        
-        # 时间GCNFormer - 使用动态相似度计算
-        self.temporal_gcnformer = AGFormerBlock(dim, mlp_ratio, act_layer, attn_drop, drop, drop_path,
-                                               mode='temporal', mixer_type="graph",
-                                               num_nodes=num_frames,
-                                               neighbour_num=temporal_neighbour_k,
-                                               use_temporal_similarity=True,
-                                               use_layer_scale=use_layer_scale,
-                                               layer_scale_init_value=layer_scale_init_value)
-        
-    def forward(self, x):
-        # 先进行空间建模，再进行时间建模
-        x = self.spatial_gcnformer(x)
-        x = self.temporal_gcnformer(x)
-        return x
-
-
-class AGFormerBlock(nn.Module):
-    """
-    轻量级的AGFormer Block实现，用于GCNFormer流
-    """
-    def __init__(self, dim, mlp_ratio=4., act_layer=nn.GELU, attn_drop=0., drop=0., drop_path=0.,
-                 use_layer_scale=True, layer_scale_init_value=1e-5, mode='spatial', mixer_type="graph",
-                 num_nodes=17, neighbour_num=2, use_temporal_similarity=True):
+                 num_joints=17):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
-        if mixer_type == 'graph':
-            self.mixer = GCN(dim, dim,
-                             num_nodes=num_nodes,
-                             neighbour_num=neighbour_num,
-                             mode=mode,
-                             use_temporal_similarity=use_temporal_similarity)
-        else:
-            raise NotImplementedError("GCNFormer currently only supports graph mixer")
+        self.spatial_gcn = GCN(dim, dim,
+                              num_nodes=num_joints,
+                              mode='spatial',
+                              use_temporal_similarity=False)
         
         self.norm2 = nn.LayerNorm(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
@@ -80,39 +45,100 @@ class AGFormerBlock(nn.Module):
         if self.use_layer_scale:
             x = x + self.drop_path(
                 self.layer_scale_1.unsqueeze(0).unsqueeze(0)
-                * self.mixer(self.norm1(x)))
+                * self.spatial_gcn(self.norm1(x)))
             x = x + self.drop_path(
                 self.layer_scale_2.unsqueeze(0).unsqueeze(0)
                 * self.mlp(self.norm2(x)))
         else:
-            x = x + self.drop_path(self.mixer(self.norm1(x)))
+            x = x + self.drop_path(self.spatial_gcn(self.norm1(x)))
             x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
 
 
-class AdaptiveFusion(nn.Module):
+class TemporalGCNBlock(nn.Module):
     """
-    自适应融合模块，动态地结合Transformer流和GCNFormer流的特征
+    时间GCN块，专注于捕捉关节点的时间动态关系
+    """
+    def __init__(self, dim, mlp_ratio=4., act_layer=nn.GELU, drop=0., drop_path=0.,
+                 use_layer_scale=True, layer_scale_init_value=1e-5,
+                 num_frames=27, temporal_neighbour_k=2):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(dim)
+        self.temporal_gcn = GCN(dim, dim,
+                               num_nodes=num_frames,
+                               neighbour_num=temporal_neighbour_k,
+                               mode='temporal',
+                               use_temporal_similarity=True)
+        
+        self.norm2 = nn.LayerNorm(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = MLP(in_features=dim, hidden_features=mlp_hidden_dim,
+                       act_layer=act_layer, drop=drop)
+
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.use_layer_scale = use_layer_scale
+        if use_layer_scale:
+            self.layer_scale_1 = nn.Parameter(layer_scale_init_value * torch.ones(dim), requires_grad=True)
+            self.layer_scale_2 = nn.Parameter(layer_scale_init_value * torch.ones(dim), requires_grad=True)
+
+    def forward(self, x):
+        if self.use_layer_scale:
+            x = x + self.drop_path(
+                self.layer_scale_1.unsqueeze(0).unsqueeze(0)
+                * self.temporal_gcn(self.norm1(x)))
+            x = x + self.drop_path(
+                self.layer_scale_2.unsqueeze(0).unsqueeze(0)
+                * self.mlp(self.norm2(x)))
+        else:
+            x = x + self.drop_path(self.temporal_gcn(self.norm1(x)))
+            x = x + self.drop_path(self.mlp(self.norm2(x)))
+        return x
+
+
+class GCNFormerBlock(nn.Module):
+    """
+    GCNFormer Block实现，包含空间GCN和时间GCN的交替处理
+    """
+    def __init__(self, dim, mlp_ratio=4., act_layer=nn.GELU, drop=0., drop_path=0.,
+                 use_layer_scale=True, layer_scale_init_value=1e-5,
+                 num_joints=17, num_frames=27, temporal_neighbour_k=2):
+        super().__init__()
+        # 交替的spatial和temporal GCN块
+        self.spatial_block = SpatialGCNBlock(dim, mlp_ratio, act_layer, drop, drop_path,
+                                           use_layer_scale, layer_scale_init_value,
+                                           num_joints)
+        self.temporal_block = TemporalGCNBlock(dim, mlp_ratio, act_layer, drop, drop_path,
+                                             use_layer_scale, layer_scale_init_value,
+                                             num_frames, temporal_neighbour_k)
+        
+    def forward(self, x):
+        # 先进行空间建模，再进行时间建模
+        x = self.spatial_block(x)
+        x = self.temporal_block(x)
+        return x
+
+class FeatureFusion(nn.Module):
+    """
+    特征融合模块，使用concat+Linear方式融合Transformer流和GCNFormer流的特征
+    保持维度不变，避免信息丢失
     """
     def __init__(self, dim):
         super().__init__()
-        # 小型可学习网络生成自适应权重
-        self.fusion = nn.Linear(dim * 2, 1)
-        self._init_fusion()
-        
-    def _init_fusion(self):
-        # 初始化为相等权重
-        self.fusion.weight.data.fill_(0)
-        self.fusion.bias.data.fill_(0)
+        # 使用Linear层处理concat后的特征，保持维度不变
+        self.fusion = nn.Linear(dim * 2, dim)
+        self.norm = nn.LayerNorm(dim)
+        self.act = nn.GELU()
         
     def forward(self, x_tf, x_gcn):
-        # 生成融合权重
-        alpha = torch.cat((x_tf, x_gcn), dim=-1)
-        alpha = self.fusion(alpha)
-        alpha = torch.sigmoid(alpha)  # [b, t, 1]
-        
-        # 逐元素加权融合
-        x_merged = alpha * x_tf + (1 - alpha) * x_gcn
+        # 拼接两个流的特征
+        x_concat = torch.cat((x_tf, x_gcn), dim=-1)
+        # 通过Linear层保持维度不变
+        x_merged = self.fusion(x_concat)
+        # 添加归一化和激活函数
+        x_merged = self.norm(x_merged)
+        x_merged = self.act(x_merged)
+        # 残差连接，保留原始信息
+        x_merged = x_merged + x_tf
         return x_merged
 
 
@@ -155,19 +181,22 @@ class SGraAGFormer(nn.Module):
                                     num_heads, mlp_ratio, qkv_bias, qk_scale,
                                     drop_rate, attn_drop_rate, drop_path_rate, norm_layer)
 
-        ## GCN流 - 使用GCNFormer的结构
+        ## GCN流 - 使用GCNFormer的结构，包含12层交替的spatialGCN和Temporal GCN
         self.gcn_embed = nn.Linear(in_chans, embed_dim_ratio)
         self.gcn_pos_embed = nn.Parameter(torch.zeros(1, num_joints, embed_dim_ratio))
         self.gcn_norm = nn.LayerNorm(embed_dim_ratio)
         
-        # 创建4个视角的GCNFormer流处理模块，每个视角包含多层GCNFormerBlock
-        # 每层包含空间GCNFormer和时间GCNFormer，共6层
+        # 创建4个视角的GCNFormer流处理模块，每个视角包含12层交替的spatial和temporal GCN
         self.gcn_layers = nn.ModuleList([
             nn.Sequential(
-                *[AGFormerBlock(embed_dim_ratio, mlp_ratio, act_layer=nn.GELU, drop=drop_rate, drop_path=drop_path_rate,
-                                              mode='spatial', mixer_type="graph",
-                                              num_nodes=num_joints,
-                                ) for _ in range(6)]
+                # 12层交替的spatial和temporal GCN (6个完整的GCNFormerBlock)
+                *[GCNFormerBlock(embed_dim_ratio, mlp_ratio, act_layer=nn.GELU, 
+                                drop=drop_rate, drop_path=drop_path_rate,
+                                use_layer_scale=True,
+                                layer_scale_init_value=1e-5,
+                                num_joints=num_joints,
+                                num_frames=num_frame,
+                                temporal_neighbour_k=2) for _ in range(6)]
             ) for _ in range(4)
         ])
 
@@ -181,9 +210,9 @@ class SGraAGFormer(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-        # 自适应融合模块
-        self.adaptive_fusion = nn.ModuleList([
-            AdaptiveFusion(embed_dim) for _ in range(4)
+        # 特征融合模块 - 使用concat+Linear方式
+        self.feature_fusion = nn.ModuleList([
+            FeatureFusion(embed_dim_ratio) for _ in range(4)
         ])
         
         # Time Serial - 时间编码器
@@ -239,7 +268,7 @@ class SGraAGFormer(nn.Module):
         x_views = [x[:, :, i] for i in range(4)]  # [b, 27, 17, 2] for each view
         hop_views = [hops[:, :, i] for i in range(4)]  # [b, 27, 17, 17*4] for each view
 
-        # Transformer流处理
+        # Transformer流处理 - 4层spatial+temporal交替结构
         x_tf = []
         hop_tf = []
         
@@ -263,7 +292,7 @@ class SGraAGFormer(nn.Module):
             x_tf.append(x_i_tf)
             hop_tf.append(hop_i_tf)
 
-        # GCNFormer流处理
+        # GCNFormer流处理 - 12层交替的spatial和temporal GCN
         x_gcn = []
         for i in range(4):
             xv = x_views[i]  # [b, 27, 17, 2]
@@ -272,12 +301,11 @@ class SGraAGFormer(nn.Module):
             xv_embedded = xv_embedded + self.gcn_pos_embed.unsqueeze(1)  # 添加位置编码
             xv_embedded = self.gcn_norm(xv_embedded)
             
-            # 通过GCNFormer层处理
+            # 通过12层交替的spatial和temporal GCN处理
             xv_processed = self.gcn_layers[i](xv_embedded)
             
-            # 重塑为与Transformer流相同的形状 [b, 27, 544]
-            xv_reshaped = xv_processed.reshape(b, f, -1)
-            x_gcn.append(xv_reshaped)
+            # 保持原始形状用于自适应融合
+            x_gcn.append(xv_processed)
 
         # 对比学习损失计算（使用Transformer流的输出）
         x1_c = self.linear_contrastive(x_tf[0])
@@ -307,19 +335,29 @@ class SGraAGFormer(nn.Module):
 
         # 双流融合：使用自适应融合将Transformer流和GCNFormer流的特征进行融合
         x_fused_views = []
+        x_fused_views_flat = []
+        
+        # 重塑Transformer流特征以便与GCN流特征进行融合
         for i in range(4):
-            # 自适应融合
-            x_fused = self.adaptive_fusion[i](x_tf[i], x_gcn[i])
+            # 将Transformer流特征重塑为 [b, 27, 17, 32]
+            x_tf_reshape = x_tf[i].view(b, f, j, -1)
+            
+            # 使用concat+Linear方式融合特征
+            x_fused = self.feature_fusion[i](x_tf_reshape, x_gcn[i])
             x_fused_views.append(x_fused)
+            
+            # 重塑为扁平化特征用于后续处理
+            x_fused_flat = x_fused.reshape(b, f, -1)
+            x_fused_views_flat.append(x_fused_flat)
 
         ### 多视角跨通道融合 (使用SGraFormer的多视角融合模块)
-        x = torch.cat([xf.unsqueeze(1) for xf in x_fused_views], dim=1) + self.view_pos_embed # [b, 4, 27, 544]
+        x = torch.cat([xf.unsqueeze(1) for xf in x_fused_views_flat], dim=1) + self.view_pos_embed # [b, 4, 27, 544]
         x = self.pos_drop(x) # [b, 4, 27, 544]
         
         # 融合所有视角
         x = self.conv(x).squeeze(1)
         for i in range(4):
-            x = x + x_fused_views[i]
+            x = x + x_fused_views_flat[i]
         
         # Temporal transformer encoder
         x = x.view(b, f, j, -1)  # [b, 27, 17, 32]

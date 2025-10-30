@@ -5,19 +5,18 @@ import random
 import torch.optim as optim
 from tqdm import tqdm
 # from torch.utils.tensorboard import SummaryWriter
-from common.loss import combined_depth_consistency_loss
 
 from common.utils import *
 from common.opt import opts
 from common.h36m_dataset import Human36mDataset
 from common.Mydataset import Fusion
 
-from model.SGraFormer_loss import sgraformer
+from model.SGraEnFormer import sgraformer
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "7"
-CUDA_ID = [0]
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2"
+CUDA_ID = [0,1,2]
 device = torch.device("cuda")
 
 
@@ -31,8 +30,7 @@ def val(opt, actions, val_loader, model):
 
 
 def step(split, opt, actions, dataLoader, model, optimizer=None, epoch=None, writer=None, adaptive_weight=None):
-    loss_all = {'loss': AccumLoss(), 'mpjpe_loss': AccumLoss(),
-                'spatial_rank_loss': AccumLoss(), 'temporal_rank_loss': AccumLoss()}
+    loss_all = {'loss': AccumLoss()}
     action_error_sum = define_error_list(actions)
 
     if split == 'train':
@@ -55,42 +53,21 @@ def step(split, opt, actions, dataLoader, model, optimizer=None, epoch=None, wri
         out_target[:, :, 0] = 0
 
         if split == 'train':
-            # 计算MPJPE损失
-            mpjpe_loss = mpjpe_cal(output_3D, out_target)
+            loss = mpjpe_cal(output_3D, out_target)
 
-            # 计算空间和时间关系深度一致性损失
-            lambda_spatial = 20  # 空间损失权重
-            lambda_temporal = 20  # 时间损失权重
-            
-            # 计算组合深度一致性损失
-            depth_consistency_loss, spatial_rank_loss_val, temporal_rank_loss_val = combined_depth_consistency_loss(
-                output_3D, out_target, lambda_spatial=lambda_spatial, lambda_temporal=lambda_temporal
-            )
-            
-            # 总损失 = MPJPE损失 + 深度一致性损失
-            loss = mpjpe_loss + depth_consistency_loss
-            
-        
             TQDM.set_description(f'Epoch [{epoch}/{opt.nepoch}]')
-            loss_scalar = loss.mean().item()
-            mpjpe_scalar = mpjpe_loss.mean().item()
-            spatial_rank_scalar = spatial_rank_loss_val.mean().item()
-            temporal_rank_scalar = temporal_rank_loss_val.mean().item()
-            
-            TQDM.set_postfix({"l": loss_scalar, "mpjpe": mpjpe_scalar,
-                              "sr": spatial_rank_scalar, "tr": temporal_rank_scalar}
-                             )
+            TQDM.set_postfix({"l": loss.item()})
 
             N = input_2D.size(0)
-            # 更新损失累加器时也要确保使用标量
-            loss_all['spatial_rank_loss'].update(spatial_rank_loss_val.mean().item() * N, N)
-            loss_all['temporal_rank_loss'].update(temporal_rank_loss_val.mean().item() * N, N)
-            loss_all['loss'].update(loss_scalar * N, N)
-            loss_all['mpjpe_loss'].update(mpjpe_scalar * N, N)
+            loss_all['loss'].update(loss.detach().cpu().numpy() * N, N)
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+
+            # writer.add_scalars(main_tag='scalars1/train_loss',
+            #                    tag_scalar_dict={'trianloss': loss.item()},
+            #                    global_step=(epoch - 1) * len(dataLoader) + i)
 
         elif split == 'test':
             if output_3D.shape[1] != 1:
@@ -108,7 +85,7 @@ def step(split, opt, actions, dataLoader, model, optimizer=None, epoch=None, wri
 
 def input_augmentation(input_2D, hops, model):
     input_2D_non_flip = input_2D[:, 0]
-    output_3D_non_flip = model(input_2D_non_flip, hops)  # 忽略验证时的对比损失
+    output_3D_non_flip = model(input_2D_non_flip, hops)
 
     return input_2D_non_flip, output_3D_non_flip
 
@@ -141,6 +118,7 @@ if __name__ == '__main__':
 
     model = sgraformer(num_frame=opt.frames, num_joints=17, in_chans=2, embed_dim_ratio=32, depth=4,
                       num_heads=8, mlp_ratio=2., qkv_bias=True, qk_scale=None, drop_path_rate=0.1)
+    # model = FuseModel()
 
     if torch.cuda.device_count() > 1:
         print("Let's use", torch.cuda.device_count(), "GPUs!")

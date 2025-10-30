@@ -4,16 +4,13 @@ import logging
 import random
 import torch.optim as optim
 from tqdm import tqdm
-# from torch.utils.tensorboard import SummaryWriter
-# from model.SGraMotionAGFormer import SGraMotionAGFormer
+
 from common.utils import *
 from common.opt import opts
 from common.h36m_dataset import Human36mDataset
 from common.Mydataset import Fusion
 
-# from model.SGraFormer import sgraformer
-from model.SGraAGFormer import SGraAGFormer
-from model.SGraInterFormer import sgrainterformer
+from model.SGraDiFormer import sgraformer
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -21,17 +18,17 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2"
 CUDA_ID = [0, 1, 2]
 device = torch.device("cuda")
 
+# 预训练模型路径
+PRETRAINED_PATH = '/data16t/guanz/coding/SGraFormer/checkpoint/baseline/model_34_2781.pth'
 
-def train(opt, actions, train_loader, model, optimizer, epoch, writer, adaptive_weight=None):
-    return step('train', opt, actions, train_loader, model, optimizer, epoch, writer, adaptive_weight)
-
+def train(opt, actions, train_loader, model, optimizer, epoch, writer):
+    return step('train', opt, actions, train_loader, model, optimizer, epoch, writer)
 
 def val(opt, actions, val_loader, model):
     with torch.no_grad():
         return step('test', opt, actions, val_loader, model)
 
-
-def step(split, opt, actions, dataLoader, model, optimizer=None, epoch=None, writer=None, adaptive_weight=None):
+def step(split, opt, actions, dataLoader, model, optimizer=None, epoch=None, writer=None):
     loss_all = {'loss': AccumLoss()}
     action_error_sum = define_error_list(actions)
 
@@ -47,17 +44,16 @@ def step(split, opt, actions, dataLoader, model, optimizer=None, epoch=None, wri
         [input_2D, gt_3D, batch_cam, scale, bb_box, hops] = get_varialbe(split, [input_2D, gt_3D, batch_cam, scale, bb_box, hops])
 
         if split == 'train':
-            output_3D, loss_contrastive = model(input_2D, hops)
+            # 使用diffusion精炼模型进行训练
+            output_3D = model(input_2D, hops, use_diffusion=True, diffusion_steps=250)
         elif split == 'test':
-            input_2D, output_3D, loss_contrastive = input_augmentation(input_2D, hops, model)
+            input_2D, output_3D = input_augmentation(input_2D, hops, model)
 
         out_target = gt_3D.clone()
         out_target[:, :, 0] = 0
 
         if split == 'train':
             loss = mpjpe_cal(output_3D, out_target)
-            loss_contrastive = opt.contrastive_fac * loss_contrastive
-            loss = loss + loss_contrastive.mean()
 
             TQDM.set_description(f'Epoch [{epoch}/{opt.nepoch}]')
             TQDM.set_postfix({"l": loss.item()})
@@ -68,10 +64,6 @@ def step(split, opt, actions, dataLoader, model, optimizer=None, epoch=None, wri
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
-            # writer.add_scalars(main_tag='scalars1/train_loss',
-            #                    tag_scalar_dict={'trianloss': loss.item()},
-            #                    global_step=(epoch - 1) * len(dataLoader) + i)
 
         elif split == 'test':
             if output_3D.shape[1] != 1:
@@ -86,25 +78,28 @@ def step(split, opt, actions, dataLoader, model, optimizer=None, epoch=None, wri
         p1, p2 = print_error(opt.dataset, action_error_sum, opt.train)
         return p1, p2
 
-
+# 添加input_augmentation函数以支持验证
 def input_augmentation(input_2D, hops, model):
     input_2D_non_flip = input_2D[:, 0]
-    output_3D_non_flip, loss_contrastive = model(input_2D_non_flip, hops)
+    output_3D_non_flip = model(input_2D_non_flip, hops, use_diffusion=True)
+    
+    return input_2D_non_flip, output_3D_non_flip
 
-    return input_2D_non_flip, output_3D_non_flip, loss_contrastive
-
-
-if __name__ == '__main__':
+def main():
+    # Parse arguments
     opt = opts().parse()
-    root_path = opt.root_path
+    
+    # 设置随机种子
     opt.manualSeed = 1
     random.seed(opt.manualSeed)
     torch.manual_seed(opt.manualSeed)
-
+    
+    # 设置日志
     if opt.train:
         logging.basicConfig(format='%(asctime)s %(message)s', datefmt='%Y/%m/%d %H:%M:%S',
                             filename=os.path.join(opt.checkpoint, 'train.log'), level=logging.INFO)
-
+    
+    # 准备数据集
     root_path = opt.root_path
     dataset_path = root_path + 'data_3d_' + opt.dataset + '.npz'
 
@@ -119,55 +114,74 @@ if __name__ == '__main__':
     test_data = Fusion(opt=opt, train=False, dataset=dataset, root_path=root_path)
     test_dataloader = torch.utils.data.DataLoader(test_data, batch_size=opt.batch_size,
                                                   shuffle=False, num_workers=int(opt.workers), pin_memory=True)
-
-    # model = sgraformer(num_frame=opt.frames, num_joints=17, in_chans=2, embed_dim_ratio=32, depth=4,
-    #                   num_heads=8, mlp_ratio=2., qkv_bias=True, qk_scale=None, drop_path_rate=0.1)
-    model = SGraAGFormer(num_frame=opt.frames, num_joints=17, in_chans=2, embed_dim_ratio=32, depth=4,
-                          num_heads=8, mlp_ratio=2., qkv_bias=True, qk_scale=None, drop_path_rate=0.1)
-    model = sgrainterformer(
-        num_frame=opt.frames,
-        num_joints=17,
-        in_chans=2,
-        embed_dim_ratio=32,
-        depth=4,
-        num_heads=8,
-        mlp_ratio=2.,
-        qkv_bias=True,
-        qk_scale=None,
-        drop_rate=0.,
-        attn_drop_rate=0.,
-        drop_path_rate=0.1
-    )
     
+    # 创建模型
+    model = sgraformer(num_frame=opt.frames, num_joints=17, in_chans=2, embed_dim_ratio=32, depth=4,
+                      num_heads=8, mlp_ratio=2., qkv_bias=True, qk_scale=None, drop_path_rate=0.1)
+    
+    # 多GPU设置
     if torch.cuda.device_count() > 1:
         print("Let's use", torch.cuda.device_count(), "GPUs!")
         model = torch.nn.DataParallel(model, device_ids=CUDA_ID).to(device)
     model = model.to(device)
-
+    
+    # 加载预训练模型
     model_dict = model.state_dict()
-    if opt.previous_dir != '':
-        print('pretrained model path:', opt.previous_dir)
-        model_path = opt.previous_dir
-
-        pre_dict = torch.load(model_path)
-
-        model_dict = model.state_dict()
-        state_dict = {k: v for k, v in pre_dict.items() if k in model_dict.keys()}
-        model_dict.update(state_dict)
-        model.load_state_dict(model_dict)
-
-    all_param = []
-    lr = opt.lr
-    all_param += list(model.parameters())
-
-    optimizer = optim.AdamW(all_param, lr=lr, weight_decay=0.01)
-
-    ## tensorboard
-    # writer = SummaryWriter("runs/nin")
+    print('pretrained model path:', PRETRAINED_PATH)
+    
+    pre_dict = torch.load(PRETRAINED_PATH)
+    
+    # 过滤参数并加载
+    model_dict = model.state_dict()
+    state_dict = {k: v for k, v in pre_dict.items() if k in model_dict.keys()}
+    model_dict.update(state_dict)
+    model.load_state_dict(model_dict)
+    print(f"Successfully loaded {len(state_dict)} parameters from checkpoint")
+    
+    # 冻结原始模型参数，只训练diffusion部分
+    print("Freezing original SGraFormer parameters...")
+    
+    # 手动初始化diffusion_refiner，确保它在收集参数前被创建
+    print("Initializing diffusion refiner...")
+    dummy_input = torch.zeros(1, opt.frames, 17, 2).to(device)  # 假的2D输入
+    dummy_x_2d = torch.zeros(1, 1, opt.frames, 17, 2).to(device)  # 假的多视图2D输入
+    with torch.no_grad():
+        # 调用模型的forward方法来触发diffusion_refiner的初始化
+        # 这里假设model.forward方法接受x_2d和use_diffusion=True参数
+        if hasattr(model, 'module'):  # 处理DataParallel包装的情况
+            model.module.forward(dummy_input, dummy_x_2d, use_diffusion=True)
+        else:
+            model.forward(dummy_input, dummy_x_2d, use_diffusion=True)
+    
+    # 现在收集diffusion相关参数
+    diffusion_params = []
+    has_diffusion_params = False
+    
+    for name, param in model.named_parameters():
+        # 只让diffusion相关参数可训练
+        if 'diffusion_refiner' in name:
+            param.requires_grad = True
+            diffusion_params.append(param)
+            print(f"Trainable parameter: {name}")
+            has_diffusion_params = True
+        else:
+            param.requires_grad = False
+    
+    # 如果仍然没有找到diffusion参数，发出警告
+    if not has_diffusion_params:
+        print("Warning: No diffusion_refiner parameters found! Check if the attribute name is correct.")
+    
+    # 创建优化器，只优化diffusion参数
+    optimizer = optim.AdamW(diffusion_params, lr=opt.lr, weight_decay=0.1)
+    
+    # tensorboard
     writer = None
     flag = 0
-
-
+    opt.previous_best_threshold = float('inf')
+    opt.previous_name = ''
+    
+    # 训练循环
+    lr = opt.lr
     for epoch in range(1, opt.nepoch + 1):
         if opt.train:
             loss = train(opt, actions, train_dataloader, model, optimizer, epoch, writer)
@@ -198,3 +212,6 @@ if __name__ == '__main__':
                 lr *= opt.lr_decay
 
     print(opt.checkpoint)
+
+if __name__ == '__main__':
+    main()

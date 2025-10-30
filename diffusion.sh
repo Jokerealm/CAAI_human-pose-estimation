@@ -1,6 +1,6 @@
 #!/bin/bash
 
-nohup python main_en.py \
+nohup python main_diffusion.py \
     --frames 27 \
     --batch_size 1024 \
     --nepoch 100 \

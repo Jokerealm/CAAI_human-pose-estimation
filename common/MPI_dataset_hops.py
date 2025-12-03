@@ -213,8 +213,8 @@ class Fusion_3dhp(data.Dataset):
         self.test_aug = opt.test_augmentation
         self.pad = opt.pad
 
-        self.dataset_2d = np.load('dataset/data_2d_3dhp.npz', allow_pickle=True)['positions_2d'][()]
-        self.dataset_3d = np.load('dataset/data_3d_3dhp.npz', allow_pickle=True)['positions_3d'][()]
+        self.dataset_2d = np.load('dataset/data_2d_mpi_inf_3dhp.npz', allow_pickle=True)['positions_2d'][()]
+        self.dataset_3d = np.load('dataset/data_3d_mpi_inf_3dhp.npz', allow_pickle=True)['positions_3d'][()]
         
 
         self.extrinsic_matrix = np.array([[9.650164e-01, 4.880220e-03, 2.621440e-01, -5.628666e+02],
@@ -224,7 +224,7 @@ class Fusion_3dhp(data.Dataset):
 
         if self.train:
 
-            subject_list = ['S' + str(i) for i in range(1, 7)]
+            subject_list = ['TS' + str(i) for i in range(1, 7)]
             self.dataset_2d, self.dataset_3d = self.prepare_data(subject_list)
             self.poses_train, self.poses_train_2d = self.fetch(subject_list)
             self.generator = ChunkedGenerator(opt.batch_size // opt.stride, self.poses_train,
@@ -233,7 +233,7 @@ class Fusion_3dhp(data.Dataset):
                                               out_all=opt.out_all)
             print('INFO: Training on {} frames'.format(self.generator.num_frames()))
         else:
-            subject_list = ['S' + str(i) for i in range(7, 9)]
+            subject_list = ['TS' + str(i) for i in range(1, 7)]
             self.dataset_2d, self.dataset_3d = self.prepare_data(subject_list)
             self.poses_train, self.poses_train_2d = self.fetch(subject_list)
             self.generator = ChunkedGenerator(opt.batch_size // opt.stride, self.poses_train,
@@ -244,34 +244,26 @@ class Fusion_3dhp(data.Dataset):
 
     def prepare_data(self, subject_list):
 
-        video_list = [0, 6, 3, 5]
-
         for s in subject_list:
             for seq in self.dataset_2d[s].keys():
-                positions_2d_pairs = []
-                positions_3d_pairs = []
-                positions_2d_pairs.append([self.dataset_2d[s][seq][video_list[0]]/1024 - 1,
-                                           self.dataset_2d[s][seq][video_list[1]]/1024 - 1,
-                                           self.dataset_2d[s][seq][video_list[2]]/1024 - 1,
-                                           self.dataset_2d[s][seq][video_list[3]]/1024 - 1])
-                # print(positions_2d_pairs[0])
-                # print(positions_2d_pairs[1])
-                # positions_2d_pairs.append([np.array(self.dataset_2d[s][seq][video_list[0]] / 2048 * 2 - [1, 1]),
-                #                            np.array(self.dataset_2d[s][seq][video_list[1]] / 2048 * 2 - [1, 1]),
-                #                            np.array(self.dataset_2d[s][seq][video_list[2]] / 2048 * 2 - [1, 1]),
-                #                            np.array(self.dataset_2d[s][seq][video_list[3]] / 2048 * 2 - [1, 1])])
-
-                positions_3d_pairs.append(self.dataset_3d[s][seq][video_list[1]])
-                # print(positions_2d_pairs)
-                self.dataset_2d[s][seq].append(
-                    np.array(positions_2d_pairs).squeeze(0).transpose((1, 0, 2, 3)))  ##输入输出放在最后了
-
-                lens, multi = np.array(positions_3d_pairs).transpose((1, 0, 2, 3)).shape[:2]
-                positions_3d_pairs = np.concatenate(
-                    [np.array(positions_3d_pairs).transpose((1, 0, 2, 3)), np.ones((lens, multi, 17, 1))], axis=3)
-                # positions_3d_pairs = np.dot(positions_3d_pairs, self.extrinsic_matrix)
-                positions_3d_pairs = positions_3d_pairs[:, :, :, :-1]
-                self.dataset_3d[s][seq].append(positions_3d_pairs)
+                # 3DHP dataset structure: (1, frames, 17, 2) for 2D and (1, frames, 17, 3) for 3D
+                # We need to expand to 4 views by replicating the single view
+                seq_2d = self.dataset_2d[s][seq][0]  # Shape: (frames, 17, 2)
+                seq_3d = self.dataset_3d[s][seq][0]  # Shape: (frames, 17, 3)
+                
+                # Normalize 2D coordinates to [-1, 1]
+                seq_2d_norm = seq_2d / 1024 - 1
+                
+                # Replicate to 4 views (simulating multi-view setup)
+                positions_2d_pairs = np.stack([seq_2d_norm, seq_2d_norm, seq_2d_norm, seq_2d_norm], axis=1)
+                # Shape: (frames, 4, 17, 2)
+                
+                # For 3D, we only need one view
+                positions_3d_pairs = seq_3d  # Shape: (frames, 17, 3)
+                
+                # Store processed data
+                self.dataset_2d[s][seq] = [positions_2d_pairs]
+                self.dataset_3d[s][seq] = [positions_3d_pairs]
 
         return self.dataset_2d, self.dataset_3d
 
@@ -281,11 +273,11 @@ class Fusion_3dhp(data.Dataset):
         out_poses_2d = {}
         for s in subject_list:
             for seq in self.dataset_2d[s].keys():
-                poses_2d = self.dataset_2d[s][seq][-1]
+                poses_2d = self.dataset_2d[s][seq][0]
                 out_poses_2d[(s, seq)] = poses_2d
 
-                poses_3d = self.dataset_3d[s][seq][-1]
-                out_poses_3d[(s, seq)] = poses_3d[:, 0]
+                poses_3d = self.dataset_3d[s][seq][0]
+                out_poses_3d[(s, seq)] = poses_3d
 
         return out_poses_3d, out_poses_2d
 

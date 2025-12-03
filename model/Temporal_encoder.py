@@ -158,3 +158,193 @@ class Temporal__features(nn.Module):
         # x = self.weighted_mean(x)
         x = x.view(b, opt.frames, -1)
         return x
+    
+
+class AdaptiveTCN(nn.Module):
+    """
+    Adaptive Temporal Convolutional Network
+    Captures local temporal patterns with learnable receptive fields
+    """
+    def __init__(self, channels, num_frames, kernel_sizes=[3, 5, 7], dropout=0.1):
+        super().__init__()
+        self.num_branches = len(kernel_sizes)
+        
+        # Multi-scale temporal convolutions
+        self.branches = nn.ModuleList()
+        for ks in kernel_sizes:
+            branch = nn.Sequential(
+                nn.Conv1d(channels, channels, kernel_size=ks, 
+                         stride=1, padding=ks//2, groups=channels),
+                nn.BatchNorm1d(channels),
+                nn.GELU(),
+                nn.Conv1d(channels, channels, kernel_size=1),
+                nn.Dropout(dropout)
+            )
+            self.branches.append(branch)
+        
+        # Adaptive fusion weights
+        self.fusion_weights = nn.Parameter(torch.ones(self.num_branches) / self.num_branches)
+        self.fusion_norm = nn.LayerNorm(channels)
+        
+    def forward(self, x):
+        """
+        Args:
+            x: (B, F, C) - batch, frames, channels
+        Returns:
+            out: (B, F, C)
+        """
+        # Transpose for Conv1d: (B, C, F)
+        x_t = x.transpose(1, 2)
+        
+        # Multi-scale convolution
+        branch_outs = []
+        for branch in self.branches:
+            branch_outs.append(branch(x_t))
+        
+        # Adaptive fusion
+        weights = torch.softmax(self.fusion_weights, dim=0)
+        out = sum(w * b for w, b in zip(weights, branch_outs))
+        
+        # Transpose back: (B, F, C)
+        out = out.transpose(1, 2)
+        out = self.fusion_norm(out + x)  # Residual connection
+        
+        return out
+
+
+class TrajectoryRefinement(nn.Module):
+    """
+    Trajectory-aware Refinement Module
+    Enforces motion smoothness and temporal consistency
+    """
+    def __init__(self, embed_dim, num_joints=17, num_frames=9, dropout=0.1):
+        super().__init__()
+        self.num_joints = num_joints
+        self.num_frames = num_frames
+        
+        # Velocity and acceleration encoders
+        self.velocity_encoder = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim // 2, embed_dim)
+        )
+        
+        self.acceleration_encoder = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim // 2, embed_dim)
+        )
+        
+        # Trajectory attention
+        self.traj_attn = nn.MultiheadAttention(
+            embed_dim, num_heads=8, dropout=dropout, batch_first=True
+        )
+        
+        # Refinement MLP
+        self.refine_mlp = nn.Sequential(
+            nn.LayerNorm(embed_dim),
+            nn.Linear(embed_dim, embed_dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim * 2, embed_dim)
+        )
+        
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        
+    def compute_velocity(self, x):
+        """Compute first-order difference (velocity)"""
+        # x: (B, F, C)
+        velocity = torch.zeros_like(x)
+        velocity[:, 1:] = x[:, 1:] - x[:, :-1]
+        velocity[:, 0] = velocity[:, 1]  # Copy first frame
+        return velocity
+    
+    def compute_acceleration(self, velocity):
+        """Compute second-order difference (acceleration)"""
+        acceleration = torch.zeros_like(velocity)
+        acceleration[:, 1:] = velocity[:, 1:] - velocity[:, :-1]
+        acceleration[:, 0] = acceleration[:, 1]
+        return acceleration
+    
+    def forward(self, x):
+        """
+        Args:
+            x: (B, F, C) - temporal features
+        Returns:
+            refined: (B, F, C)
+        """
+        # Compute motion derivatives
+        velocity = self.compute_velocity(x)
+        acceleration = self.compute_acceleration(velocity)
+        
+        # Encode motion information
+        vel_feat = self.velocity_encoder(velocity)
+        acc_feat = self.acceleration_encoder(acceleration)
+        
+        # Combine with original features
+        motion_aware = x + vel_feat + acc_feat
+        motion_aware = self.norm1(motion_aware)
+        
+        # Trajectory attention
+        traj_refined, _ = self.traj_attn(motion_aware, motion_aware, motion_aware)
+        traj_refined = x + traj_refined
+        traj_refined = self.norm2(traj_refined)
+        
+        # Final refinement
+        refined = traj_refined + self.refine_mlp(traj_refined)
+        
+        return refined
+
+
+class EnhancedTemporalModule(nn.Module):
+    """
+    Enhanced Temporal Module combining TCN and Trajectory Refinement
+    """
+    def __init__(self, embed_dim, num_frames=9, num_joints=17, 
+                 tcn_kernels=[3, 5, 7], dropout=0.1):
+        super().__init__()
+        
+        # Pre-processing TCN
+        self.pre_tcn = AdaptiveTCN(
+            channels=embed_dim,
+            num_frames=num_frames,
+            kernel_sizes=tcn_kernels,
+            dropout=dropout
+        )
+        
+        # Trajectory refinement
+        self.trajectory_refine = TrajectoryRefinement(
+            embed_dim=embed_dim,
+            num_joints=num_joints,
+            num_frames=num_frames,
+            dropout=dropout
+        )
+        
+        # Post-processing TCN
+        self.post_tcn = AdaptiveTCN(
+            channels=embed_dim,
+            num_frames=num_frames,
+            kernel_sizes=tcn_kernels,
+            dropout=dropout
+        )
+        
+    def forward(self, x):
+        """
+        Args:
+            x: (B, F, C) - temporal features from transformer
+        Returns:
+            refined: (B, F, C)
+        """
+        # Local temporal modeling
+        x = self.pre_tcn(x)
+        
+        # Trajectory-aware refinement
+        x = self.trajectory_refine(x)
+        
+        # Final temporal smoothing
+        x = self.post_tcn(x)
+        
+        return x

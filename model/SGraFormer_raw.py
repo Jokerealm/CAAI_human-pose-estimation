@@ -11,6 +11,7 @@ from common.opt import opts
 from model.Spatial_encoder import First_view_Spatial_features, Spatial_features
 from model.Temporal_encoder import Temporal__features
 
+
 opt = opts().parse()
 device = torch.device("cuda")
 
@@ -100,6 +101,8 @@ class sgraformer(nn.Module):
 
         self.edge_embedding = nn.Linear(17*17*4, 17*17)
 
+
+        
     def forward(self, x, hops):
         b, f, v, j, c = x.shape
 
@@ -152,18 +155,17 @@ class sgraformer(nn.Module):
 
         hop = torch.cat((hop1.unsqueeze(1), hop2.unsqueeze(1), hop3.unsqueeze(1), hop4.unsqueeze(1)), dim=1) + self.view_pos_embed
         hop = self.pos_drop(hop)
-        # hop = self.conv_hop(hop).squeeze(1) + hop1 + hop2 + hop3 + hop4
-        # hop = self.conv_hop_norm(hop)
         hop = self.conv(hop).squeeze(1) + hop1 + hop2 + hop3 + hop4
         hop = self.conv_norm(hop)
 
-        x = x * hop
+        x = x * hop # b, f, embedding*j
 
 
         ### Temporal transformer encoder
-        x = self.TF(x)
+        x = self.TF(x) # b, f, embedding*j
         
-        x = self.head(x)
+        x = self.head(x) # b, f, 3*j
         x = x.view(b, opt.frames, j, -1)
+        # print(x.shape)
         return x
 

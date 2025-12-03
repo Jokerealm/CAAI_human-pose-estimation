@@ -2,6 +2,8 @@
 
 import torch
 import torch.nn as nn
+import json
+import numpy as np
 from functools import partial
 from einops import rearrange
 from timm.layers import DropPath
@@ -9,11 +11,12 @@ from timm.layers import DropPath
 from common.opt import opts
 
 from model.Spatial_encoder import First_view_Spatial_features, Spatial_features
-from model.Temporal_encoder import Temporal__features
+from model.Temporal_encoder import Temporal__features, EnhancedTemporalModule
+
+
 
 opt = opts().parse()
 device = torch.device("cuda")
-
 
 
 #######################################################################################################################
@@ -41,6 +44,7 @@ class sgraformer(nn.Module):
 
         embed_dim = embed_dim_ratio * num_joints
         out_dim = num_joints * 3  #### output dimension is num_joints * 3
+        
         ##Spatial_features
         self.SF1 = First_view_Spatial_features(num_frame, num_joints, in_chans, embed_dim_ratio, depth,
                                                num_heads, mlp_ratio, qkv_bias, qk_scale,
@@ -76,10 +80,20 @@ class sgraformer(nn.Module):
 
         self.conv_hop_norm = nn.LayerNorm(embed_dim)
 
+
         # Time Serial
         self.TF = Temporal__features(num_frame, num_joints, in_chans, embed_dim_ratio, depth,
                                         num_heads, mlp_ratio, qkv_bias, qk_scale,
                                         drop_rate, attn_drop_rate, drop_path_rate, norm_layer)
+        
+        # Enhanced Temporal Refinement Module
+        self.temporal_refine = EnhancedTemporalModule(
+            embed_dim=embed_dim,
+            num_frames=num_frame,
+            num_joints=num_joints,
+            tcn_kernels=[3, 5, 7],
+            dropout=drop_rate
+        )
 
         self.head = nn.Sequential(
             nn.LayerNorm(embed_dim),
@@ -99,7 +113,13 @@ class sgraformer(nn.Module):
 
         self.edge_embedding = nn.Linear(17*17*4, 17*17)
 
+        
     def forward(self, x, hops):
+        """
+        Args:
+            x: 2D input (B, F, V, J, 2)
+            hops: hop matrices
+        """
         b, f, v, j, c = x.shape
 
         edge_embedding = self.edge_embedding(hops[0].reshape(1, -1))
@@ -114,6 +134,7 @@ class sgraformer(nn.Module):
         hops2 = hop_global * hops[:, :, :, 1]
         hops3 = hop_global * hops[:, :, :, 2]
         hops4 = hop_global * hops[:, :, :, 3]
+        # hops = torch.cat((hops1,hops2,hops3,hops4), dim=-1)
         hops = torch.cat((hops1,hops2,hops3,hops4), dim=-1)
 
         x1 = x[:, :, 0]
@@ -153,11 +174,15 @@ class sgraformer(nn.Module):
         hop = self.conv(hop).squeeze(1) + hop1 + hop2 + hop3 + hop4
         hop = self.conv_norm(hop)
 
-        x = x * hop
+        x = x * hop # b, f, embedding*j
 
         ### Temporal transformer encoder
-        x = self.TF(x)
+        x = self.TF(x) # b, f, embedding*j
         
-        x = self.head(x)
+        ### Enhanced temporal refinement with TCN and trajectory awareness
+        x = self.temporal_refine(x) # b, f, embedding*j
+        
+        x = self.head(x) # b, f, 3*j
         x = x.view(b, opt.frames, j, -1)
+
         return x

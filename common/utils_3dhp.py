@@ -50,46 +50,49 @@ def print_error_action(action_error_sum, is_train, data_type):
         if data_type.startswith('3dhp'):
             print("{0:=^12} {1:=^10} {2:=^8} {3:=^8} {4:=^8}".format("Action", "p#1 mm", "p#2 mm", "PCK", "AUC"))
         else:
-            print("{0:=^12} {1:=^10} {2:=^8}".format("Action", "p#1 mm", "p#2 mm"))
+            print("{0:=^12} {1:=^10} {2:=^8} {3:=^8} {4:=^8}".format("Action", "p#1 mm", "p#2 mm", "PCK", "AUC"))
 
     for action, value in action_error_sum.items():
         if not is_train:
             print("{0:<12} ".format(action), end="")
             
+        # 安全获取p1和p2值
         mean_error_each['p1'] = action_error_sum[action]['p1'].avg * 1000.0
         mean_error_all['p1'].update(mean_error_each['p1'], 1)
 
         mean_error_each['p2'] = action_error_sum[action]['p2'].avg * 1000.0
         mean_error_all['p2'].update(mean_error_each['p2'], 1)
 
-        mean_error_each['pck'] = action_error_sum[action]['pck'].avg * 100.0
-        mean_error_all['pck'].update(mean_error_each['pck'], 1)
+        # 安全获取pck和auc值，如果不存在则使用默认值0
+        try:
+            mean_error_each['pck'] = action_error_sum[action]['pck'].avg * 100.0
+            mean_error_all['pck'].update(mean_error_each['pck'], 1)
+        except KeyError:
+            mean_error_each['pck'] = 0.0
+            mean_error_all['pck'].update(mean_error_each['pck'], 1)
 
-        mean_error_each['auc'] = action_error_sum[action]['auc'].avg * 100.0
-        mean_error_all['auc'].update(mean_error_each['auc'], 1)
+        try:
+            mean_error_each['auc'] = action_error_sum[action]['auc'].avg * 100.0
+            mean_error_all['auc'].update(mean_error_each['auc'], 1)
+        except KeyError:
+            mean_error_each['auc'] = 0.0
+            mean_error_all['auc'].update(mean_error_each['auc'], 1)
 
         if not is_train:
-            if data_type.startswith('3dhp'):
-                print("{0:>6.2f} {1:>10.2f} {2:>10.2f} {3:>10.2f}".format(
-                    mean_error_each['p1'], mean_error_each['p2'], 
-                    mean_error_each['pck'], mean_error_each['auc']))
-            else:
-                print("{0:>6.2f} {1:>10.2f}".format(mean_error_each['p1'], mean_error_each['p2']))
+            # 所有数据集都输出四个指标
+            print("{0:>6.2f} {1:>10.2f} {2:>10.2f} {3:>10.2f}".format(
+                mean_error_each['p1'], mean_error_each['p2'], 
+                mean_error_each['pck'], mean_error_each['auc']))
 
     if not is_train:
-        if data_type.startswith('3dhp'):
-            print("{0:<12} {1:>6.2f} {2:>10.2f} {3:>10.2f} {4:>10.2f}".format("Average", 
-                mean_error_all['p1'].avg, mean_error_all['p2'].avg,
-                mean_error_all['pck'].avg, mean_error_all['auc'].avg))
-        else:
-            print("{0:<12} {1:>6.2f} {2:>10.2f}".format("Average", mean_error_all['p1'].avg, \
-                mean_error_all['p2'].avg))
+        # 所有数据集都输出四个指标的平均值
+        print("{0:<12} {1:>6.2f} {2:>10.2f} {3:>10.2f} {4:>10.2f}".format("Average", 
+            mean_error_all['p1'].avg, mean_error_all['p2'].avg,
+            mean_error_all['pck'].avg, mean_error_all['auc'].avg))
 
-    if data_type.startswith('3dhp'):
-        return mean_error_all['p1'].avg, mean_error_all['p2'].avg,  \
-                mean_error_all['pck'].avg, mean_error_all['auc'].avg
-    else:
-        return mean_error_all['p1'].avg, mean_error_all['p2'].avg, 0, 0
+    # 所有数据集都返回四个值，确保统一接口
+    return mean_error_all['p1'].avg, mean_error_all['p2'].avg, \
+            mean_error_all['pck'].avg, mean_error_all['auc'].avg
 
 
 def save_model(previous_name, save_dir, epoch, data_threshold, model):

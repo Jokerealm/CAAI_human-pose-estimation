@@ -2,6 +2,3 @@ checkpoint/
 __pycache__/
 dataset/
 log/
-# output.log
-# output_1.log
-# output_32batchsize.log

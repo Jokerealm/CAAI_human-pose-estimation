@@ -26,12 +26,15 @@ class opts():
         self.parser.add_argument('--train', default=1)
         self.parser.add_argument('--test', action='store_true')
         self.parser.add_argument('--nepoch', type=int, default=50)
-        self.parser.add_argument('--batch_size', type=int, default=1024, help='can be changed depending on your machine')
+        self.parser.add_argument('--batch_size', type=int, default=64, help='can be changed depending on your machine')
         self.parser.add_argument('--lr', type=float, default=2e-4)
         self.parser.add_argument('--lr_decay_large', type=float, default=0.98)
         self.parser.add_argument('--large_decay_epoch', type=int, default=5)
-        self.parser.add_argument('--workers', type=int, default=8)
+        self.parser.add_argument('--workers', type=int, default=0)
         self.parser.add_argument('-lrd', '--lr_decay', default=0.98, type=float)
+        self.parser.add_argument('--weight_decay', type=float, default=0.01, help='weight decay for optimizer')
+        self.parser.add_argument('--warmup_epochs', type=int, default=5, help='warmup epochs for large batch')
+        self.parser.add_argument('--gradient_accumulation_steps', type=int, default=1, help='gradient accumulation steps')
         self.parser.add_argument('--frames', type=int, default=27)
         self.parser.add_argument('--pad', type=int, default=175)
         self.parser.add_argument('--checkpoint', type=str, default='')
@@ -44,8 +47,19 @@ class opts():
         self.parser.add_argument('-previous_best_threshold', type=float, default=math.inf)
         self.parser.add_argument('-previous_name', type=str, default='')
         self.parser.add_argument('--mvf_kernel', default=7, type=int)
-        self.parser.add_argument('--contrastive_fac', type=float, default=0.05)
-        
+        self.parser.add_argument('--aux_3d_stage', type=str, default='gt',
+                                 choices=['gt', 'triangulated_gt_cam', 'triangulated_est_cam', 'none'],
+                                 help='Stage of 3D supervision')
+        self.parser.add_argument('--aux_3d_weight', type=float, default=0.01,
+                                 help='Weight for auxiliary 3D loss')
+        self.parser.add_argument('--aux_3d_position', type=str, default='mvf',
+                                 choices=['mvf', 'temporal'],
+                                 help='Which intermediate feature to supervise')
+        self.parser.add_argument('--train_refinement_only', action='store_true',
+                                 help='Only train temporal_refine module, freeze all other layers')
+        self.parser.add_argument('--refinement_lr_ratio', type=float, default=0.1,
+                                 help='Learning rate ratio for refinement-only training (default: 0.1 = lr/10)')
+
 
     def parse(self):
         self.init()

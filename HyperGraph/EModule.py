@@ -34,6 +34,9 @@ class Enhance_Module(nn.Module):
         self.bn = nn.BatchNorm1d(feature_dim)
         self.relu = nn.ReLU()
         
+        # 用于z_enhanced_1的线性变换层
+        self.residual_linear = nn.Linear(feature_dim, feature_dim)
+        
         # 输出投影层，将增强的特征映射回原始维度
         self.output_proj = nn.Linear(feature_dim, in_channels)
     
@@ -55,7 +58,7 @@ class Enhance_Module(nn.Module):
         # [BatchSize * Number_of_Views * Number_of_Frames, Number_of_Joints, 2]
         x_reshaped = rearrange(x, 'b v f j c -> (b v f) j c')
         
-        # 提升特征维度
+        # 提升特征维度 - 这是Z_{l-1}
         x_proj = self.input_proj(x_reshaped)
         
         # 这里我们将帧数设置为1，因为我们一次处理一帧
@@ -68,20 +71,37 @@ class Enhance_Module(nn.Module):
         # 移除临时维度
         z_enhanced = z_enhanced.squeeze(1)
         
-        # 应用批归一化和激活函数
-        z_enhanced = rearrange(z_enhanced, '(b v f) j c -> (b v f j) c', 
-                              b=batch_size, v=num_views, f=num_frames)
+        # 应用Linear模块处理Z_{l-1}
+        z_linear = self.residual_linear(x_proj)
         
-        z_enhanced = self.bn(z_enhanced)
-        z_enhanced = rearrange(z_enhanced, '(b v f j) c -> (b v f) j c', 
-                              b=batch_size, v=num_views, f=num_frames)
-        z_enhanced = self.relu(z_enhanced)
+        # 第一个残差连接：Z_joint + Z_part + Z_body + Linear(Z_{l-1})
+        z_enhanced = z_enhanced + z_linear
+        
+        # 重塑输入以应用BatchNorm1d
+        z_enhanced_reshaped = rearrange(z_enhanced, '(b v f) j c -> (b v f j) c', 
+                                      b=batch_size, v=num_views, f=num_frames)
+        
+        # 应用批归一化
+        z_enhanced_reshaped = self.bn(z_enhanced_reshaped)
+        
+        # 第二个残差连接：在ReLU前连接Z_{l-1}
+        x_proj_reshaped = rearrange(x_proj, '(b v f) j c -> (b v f j) c', 
+                                  b=batch_size, v=num_views, f=num_frames)
+        z_enhanced_with_residual = z_enhanced_reshaped + x_proj_reshaped
+        
+        # 激活函数
+        z_enhanced_with_residual = self.relu(z_enhanced_with_residual)
+        
+        # 恢复关节维度，为了输出投影做准备
+        # [B*V*F, J, C]
+        z_enhanced_3d = rearrange(z_enhanced_with_residual, '(b v f j) c -> (b v f) j c', 
+                                 b=batch_size, v=num_views, f=num_frames)
         
         # 投影回原始维度
-        z_enhanced = self.output_proj(z_enhanced)
+        z_enhanced_proj = self.output_proj(z_enhanced_3d)
         
         # 恢复原始形状
-        z_enhanced = rearrange(z_enhanced, '(b v f) j c -> b v f j c', 
+        z_enhanced = rearrange(z_enhanced_proj, '(b v f) j c -> b v f j c', 
                               b=batch_size, v=num_views, f=num_frames)
         
         return z_enhanced

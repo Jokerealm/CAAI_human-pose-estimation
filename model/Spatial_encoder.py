@@ -46,8 +46,11 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-
         self.edge_embedding = nn.Linear(17*17, 17*17)
+        
+        # Gated Attention: head-specific sigmoid gates (G1 position)
+        # Each head gets its own learnable gate parameter
+        self.gate = nn.Parameter(torch.ones(1, num_heads, 1, 1))
 
     def forward(self, x, edge_embedding):
         B, N, C = x.shape
@@ -58,15 +61,22 @@ class Attention(nn.Module):
 
         edge_embedding = self.edge_embedding(edge_embedding)
         edge_embedding = edge_embedding.reshape(1, 17, 17).unsqueeze(0).repeat(B, self.num_heads, 1, 1)
-        # print(edge_embedding.shape)
 
         attn = attn + edge_embedding
-
 
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
 
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        # SDPA output: (B, num_heads, N, head_dim)
+        attn_out = attn @ v
+        
+        # Apply Gated Attention (G1 position - after SDPA, before projection)
+        # gate: (1, num_heads, 1, 1) -> sigmoid -> element-wise multiply
+        gate_value = torch.sigmoid(self.gate)
+        attn_out = attn_out * gate_value
+        
+        # Continue with standard attention
+        x = attn_out.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
@@ -93,11 +103,10 @@ class CVA_Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-
         self.edge_embedding = nn.Linear(17*17, 17*17)
-
-
-
+        
+        # Gated Attention: head-specific sigmoid gates (G1 position)
+        self.gate = nn.Parameter(torch.ones(1, num_heads, 1, 1))
 
     def forward(self, x, CVA_input, edge_embedding):
         B, N, C = x.shape
@@ -111,12 +120,18 @@ class CVA_Attention(nn.Module):
         edge_embedding = self.edge_embedding(edge_embedding)
         edge_embedding = edge_embedding.reshape(1, 17, 17).unsqueeze(0).repeat(B, self.num_heads, 1, 1)
 
-
-
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
 
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        # SDPA output: (B, num_heads, N, head_dim)
+        attn_out = attn @ v
+        
+        # Apply Gated Attention (G1 position - after SDPA, before projection)
+        gate_value = torch.sigmoid(self.gate)
+        attn_out = attn_out * gate_value
+        
+        # Continue with standard attention
+        x = attn_out.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
@@ -236,18 +251,14 @@ class First_view_Spatial_features(nn.Module):
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
 
-        self.block1 = Multi_Out_Block(dim=embed_dim_ratio, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,
-                                      qk_scale=qk_scale, drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[0],
-                                      norm_layer=norm_layer)
-        self.block2 = Multi_Out_Block(dim=embed_dim_ratio, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,
-                                      qk_scale=qk_scale, drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[1],
-                                      norm_layer=norm_layer)
-        self.block3 = Multi_Out_Block(dim=embed_dim_ratio, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,
-                                      qk_scale=qk_scale, drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[2],
-                                      norm_layer=norm_layer)
-        self.block4 = Multi_Out_Block(dim=embed_dim_ratio, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,
-                                      qk_scale=qk_scale, drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[3],
-                                      norm_layer=norm_layer)
+        # 动态创建blocks（支持任意深度）
+        self.blocks = nn.ModuleList([
+            Multi_Out_Block(dim=embed_dim_ratio, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,
+                          qk_scale=qk_scale, drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i],
+                          norm_layer=norm_layer)
+            for i in range(depth)
+        ])
+        self.depth = depth
 
         self.Spatial_norm = norm_layer(embed_dim_ratio)
 
@@ -267,10 +278,20 @@ class First_view_Spatial_features(nn.Module):
         hops = self.pos_drop(hops)
 
 
-        x, hops, MSA1 = self.block1(x, hops, edge_embedding)
-        x, hops, MSA2 = self.block2(x, hops, edge_embedding)
-        x, hops, MSA3 = self.block3(x, hops, edge_embedding)
-        x, hops, MSA4 = self.block4(x, hops, edge_embedding)
+        # 动态执行所有blocks
+        MSA_list = []
+        for i, block in enumerate(self.blocks):
+            x, hops, MSA = block(x, hops, edge_embedding)
+            MSA_list.append(MSA)
+        
+        # 返回最后4个MSA（如果不足4个则从头补齐）
+        if len(MSA_list) >= 4:
+            MSA1, MSA2, MSA3, MSA4 = MSA_list[-4], MSA_list[-3], MSA_list[-2], MSA_list[-1]
+        else:
+            # 如果不足4个，用已有的MSA填充
+            while len(MSA_list) < 4:
+                MSA_list.insert(0, MSA_list[0])
+            MSA1, MSA2, MSA3, MSA4 = MSA_list[0], MSA_list[1], MSA_list[2], MSA_list[3]
 
         x = self.Spatial_norm(x)
         x = rearrange(x, '(b f) w c -> b f (w c)', f=f)
@@ -301,18 +322,14 @@ class Spatial_features(nn.Module):
 
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
 
-        self.block1 = Multi_In_Out_Block(
-            dim=embed_dim_ratio, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
-            drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[0], norm_layer=norm_layer)
-        self.block2 = Multi_In_Out_Block(
-            dim=embed_dim_ratio, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
-            drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[1], norm_layer=norm_layer)
-        self.block3 = Multi_In_Out_Block(
-            dim=embed_dim_ratio, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
-            drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[2], norm_layer=norm_layer)
-        self.block4 = Multi_In_Out_Block(
-            dim=embed_dim_ratio, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
-            drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[3], norm_layer=norm_layer)
+        # 动态创建blocks（支持任意深度）
+        self.blocks = nn.ModuleList([
+            Multi_In_Out_Block(
+                dim=embed_dim_ratio, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
+                drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer)
+            for i in range(depth)
+        ])
+        self.depth = depth
 
         self.Spatial_norm = norm_layer(embed_dim_ratio)
 
@@ -333,11 +350,19 @@ class Spatial_features(nn.Module):
         hops = self.pos_drop(hops)
 
 
-        x, hops, MSA1 = self.block1(x, hops, MSA1, edge_embedding)
-        x, hops, MSA2 = self.block2(x, hops, MSA2, edge_embedding)
-        x, hops, MSA3 = self.block3(x, hops, MSA3, edge_embedding)
-        x, hops, MSA4 = self.block4(x, hops, MSA4, edge_embedding)
-
+        # 动态执行所有blocks
+        input_MSAs = [MSA1, MSA2, MSA3, MSA4]  # 输入的MSA
+        output_MSA_list = []
+        
+        for i, block in enumerate(self.blocks):
+            # 使用对应的输入MSA（如果超出则使用最后一个）
+            input_MSA = input_MSAs[min(i, 3)]
+            x, hops, output_MSA = block(x, hops, input_MSA, edge_embedding)
+            output_MSA_list.append(output_MSA)
+        
+        # 返回最后4个MSA（如果不足4个则从头补齐）
+        MSA1, MSA2, MSA3, MSA4 = output_MSA_list[-4], output_MSA_list[-3], output_MSA_list[-2], output_MSA_list[-1]
+        
 
         x = self.Spatial_norm(x)
         x = rearrange(x, '(b f) w c -> b f (w c)', f=f)

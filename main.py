@@ -1,8 +1,8 @@
 import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2"
-CUDA_ID = [0,1,2]
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+CUDA_ID = [0]
 
 import torch
 import logging
@@ -21,13 +21,13 @@ from common.Mydataset import Fusion
 from common.MPI_dataset_hops import Fusion_3dhp
 from common.SKI_dataset import Fusion_ski
 
-from model.SGraFormer import sgraformer
+# from model.SGraFormer import sgraformer
 from model.Auxiliary3D_Supervision import Auxiliary3DLoss
 
 from common.computer_triangulate_loss import triangulate_loss
 from common.computer_reprojection_loss import reprojection_loss
 import torch.nn.functional as F
-
+from model.SGraFormer import SGraFormer_HyperGraph
 
 device = torch.device("cuda")
 
@@ -419,10 +419,35 @@ if __name__ == '__main__':
     else:
         raise ValueError(f"Unknown dataset: {opt.dataset}. Supported datasets: h36m, 3dhp, SKI")
 
-    model = sgraformer(num_frame=opt.frames, num_joints=17, in_chans=2, embed_dim_ratio=32, depth=4,
-                      num_heads=8, mlp_ratio=2., qkv_bias=True, qk_scale=None, 
-                      drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1)
-    # model = FuseModel()
+    # model = sgraformer(num_frame=opt.frames, num_joints=17, in_chans=2, embed_dim_ratio=32, depth=4,
+    #                   num_heads=8, mlp_ratio=2., qkv_bias=True, qk_scale=None, 
+    #                   drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1)
+    print("\n📦 Creating SGraFormer_HyperGraph model...")
+    
+    # 论文建议参数：k=3, depth=3, prune_ratio=0.0
+    k_neighbors = 3
+    prune_ratio = 0.0
+    depth = 4
+    
+    print(f"  🔧 HyperGraph Parameters:")
+    print(f"     - K-neighbors: {k_neighbors}")
+    print(f"     - Prune ratio: {prune_ratio}")
+    print(f"     - Depth: {depth}")
+    
+    model = SGraFormer_HyperGraph(
+        num_frame=opt.frames,
+        num_joints=17,
+        in_chans=2,
+        embed_dim_ratio=32,
+        depth=depth,
+        k_neighbors=k_neighbors,
+        prune_ratio=prune_ratio,
+        num_heads=8,
+        mlp_ratio=2.,
+        drop_rate=0.,
+        attn_drop_rate=0.,
+        drop_path_rate=0.1
+    )
 
 
     # 检查是否使用多GPU
@@ -460,14 +485,38 @@ if __name__ == '__main__':
         # 更新模型状态字典
         model_dict.update(state_dict)
         model.load_state_dict(model_dict)
-        
+        lr = opt.lr
         print(f"Successfully loaded pretrained model. Loaded {len(state_dict)}/{len(model_dict)} parameters.")
 
-    all_param = []
-    lr = opt.lr
-    all_param += list(model.parameters())
+    # Check if we're only training the refinement module
+    if hasattr(opt, 'train_refinement_only') and opt.train_refinement_only:
+        # Get the actual model (handle DataParallel wrapping)
+        actual_model = model.module if hasattr(model, 'module') else model
+        
+        # Step 1: Freeze all parameters
+        for param in actual_model.parameters():
+            param.requires_grad = False
+        
+        # Step 2: Unfreeze the refinement module parameters
+        if hasattr(actual_model, 'temporal_refine'):
+            for param in actual_model.temporal_refine.parameters():
+                param.requires_grad = True
 
-    optimizer = optim.AdamW(all_param, lr=lr, weight_decay=0.1)
+            # Step 3: Create optimizer with only refinement module parameters
+            refinement_param = list(actual_model.temporal_refine.parameters())
+            # Use a reduced learning rate for refinement-only training
+            refinement_lr = opt.lr * getattr(opt, 'refinement_lr_ratio', 0.1)
+            optimizer = optim.AdamW(refinement_param, lr=refinement_lr, weight_decay=0.01)
+            print(f"  Using learning rate: {refinement_lr} (base lr: {opt.lr})")
+        else:
+            print("Error: Model doesn't have 'temporal_refine' attribute!")
+            exit(1)
+    else:
+        # Original behavior: train all parameters
+        all_param = []
+        all_param += list(model.parameters())
+
+        optimizer = optim.AdamW(all_param, lr=opt.lr, weight_decay=0.01)
 
     ## tensorboard
     # writer = SummaryWriter("runs/nin")
@@ -499,7 +548,7 @@ if __name__ == '__main__':
         print("=" * 80 + "\n")
     
     # ============================================================================
-
+    lr = opt.lr
     best_epoch = 0
     for epoch in range(1, opt.nepoch + 1):
         if opt.train:

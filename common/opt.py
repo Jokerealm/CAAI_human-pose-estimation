@@ -30,7 +30,7 @@ class opts():
         self.parser.add_argument('--lr', type=float, default=2e-4)
         self.parser.add_argument('--lr_decay_large', type=float, default=0.98)
         self.parser.add_argument('--large_decay_epoch', type=int, default=5)
-        self.parser.add_argument('--workers', type=int, default=0)
+        self.parser.add_argument('--workers', type=int, default=16)
         self.parser.add_argument('-lrd', '--lr_decay', default=0.98, type=float)
         self.parser.add_argument('--weight_decay', type=float, default=0.01, help='weight decay for optimizer')
         self.parser.add_argument('--warmup_epochs', type=int, default=5, help='warmup epochs for large batch')
@@ -47,14 +47,23 @@ class opts():
         self.parser.add_argument('-previous_best_threshold', type=float, default=math.inf)
         self.parser.add_argument('-previous_name', type=str, default='')
         self.parser.add_argument('--mvf_kernel', default=7, type=int)
-        self.parser.add_argument('--aux_3d_stage', type=str, default='gt',
-                                 choices=['gt', 'triangulated_gt_cam', 'triangulated_est_cam', 'none'],
-                                 help='Stage of 3D supervision')
+        # Auxiliary 3D supervision arguments
+        self.parser.add_argument('--use_auxiliary_3d', type=int, default=0,
+                                 help='Enable auxiliary 3D supervision (0=disabled, 1=enabled)')
+        self.parser.add_argument('--aux_3d_stage', type=str, default='pseudo_triangulated',
+                                 choices=['gt', 'pseudo_triangulated', 'triangulated_gt_cam', 'triangulated_est_cam', 'none'],
+                                 help='Stage of 3D supervision: gt (perfect), pseudo_triangulated (GT+noise), triangulated_gt_cam, triangulated_est_cam, none')
         self.parser.add_argument('--aux_3d_weight', type=float, default=0.01,
-                                 help='Weight for auxiliary 3D loss')
+                                 help='Weight for auxiliary 3D loss (default: 0.01)')
         self.parser.add_argument('--aux_3d_position', type=str, default='mvf',
                                  choices=['mvf', 'temporal'],
-                                 help='Which intermediate feature to supervise')
+                                 help='Which intermediate feature to supervise: mvf (after multi-view fusion) or temporal (after temporal encoder)')
+        self.parser.add_argument('--aux_3d_loss_type', type=str, default='mse',
+                                 choices=['mse', 'l1', 'smooth_l1', 'cosine', 'huber'],
+                                 help='Type of auxiliary loss function')
+        self.parser.add_argument('--aux_3d_projection', type=str, default='simple',
+                                 choices=['simple', 'mlp', 'deep'],
+                                 help='Type of projection network: simple (1-layer), mlp (2-layer), deep (3-layer)')
         self.parser.add_argument('--train_refinement_only', action='store_true',
                                  help='Only train temporal_refine module, freeze all other layers')
         self.parser.add_argument('--refinement_lr_ratio', type=float, default=0.1,
